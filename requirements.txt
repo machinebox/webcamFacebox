@@ -1,0 +1,2 @@
+opencv==3.2.0
+imutils==0.4.3
