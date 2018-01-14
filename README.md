@@ -4,5 +4,5 @@ This is the code used in this blog post: https://blog.machinebox.io/streaming-an
 
 # Requirements
 
-* Go and Python (OpenCV)
+* Go and [GoCV](https://gocv.io/getting-started/osx/)
 * Facebox running in your localhost https://machinebox.io/docs/facebox

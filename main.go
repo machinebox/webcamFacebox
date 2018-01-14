@@ -1,88 +1,95 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
-	"io/ioutil"
+	"image"
+	"image/color"
 	"log"
-	"mime/multipart"
-	"net/http"
-	"os/exec"
+	"os"
+	"time"
 
 	"github.com/machinebox/sdk-go/facebox"
+	"gocv.io/x/gocv"
 )
 
 const boundary = "informs"
 
 var (
-	fbox *facebox.Client
+	fbox          *facebox.Client
+	faceAlgorithm = "haarcascade_frontalface_default.xml"
+	blue          = color.RGBA{0, 0, 255, 0}
 )
 
 func main() {
-	http.HandleFunc("/cam", cam)
-	http.HandleFunc("/camFacebox", camFacebox)
-
 	fbox = facebox.New("http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8081", nil))
-}
 
-func cam(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+boundary)
-	cmd := exec.CommandContext(r.Context(), "./capture.py")
-	cmd.Stdout = w
-	err := cmd.Run()
+	// open webcam
+	webcam, err := gocv.VideoCaptureDevice(0)
 	if err != nil {
-		log.Println("[ERROR] capturing webcam", err)
+		log.Fatalf("error opening video capture device: %v", err)
 	}
-}
+	defer webcam.Close()
 
-func camFacebox(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+boundary)
-	cmd := exec.CommandContext(r.Context(), "./capture.py")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Println("[ERROR] Getting the stdout pipe")
-		return
-	}
-	cmd.Start()
+	// open display window
+	window := gocv.NewWindow("webcamFacebox")
+	defer window.Close()
 
-	mr := multipart.NewReader(stdout, boundary)
+	// prepare image matrix
+	img := gocv.NewMat()
+	defer img.Close()
+
+	// load classifier to recognize faces
+	classifier := gocv.NewCascadeClassifier()
+	defer classifier.Close()
+	classifier.Load(faceAlgorithm)
+
 	for {
-		p, err := mr.NextPart()
-		if err == io.EOF {
-			log.Println("[DEBUG] EOF")
-			break
-		}
-		if err != nil {
-			log.Println("[ERROR] reading next part", err)
-			return
-		}
-		jp, err := ioutil.ReadAll(p)
-		if err != nil {
-			log.Println("[ERROR] reading from bytes ", err)
+		if ok := webcam.Read(img); !ok {
+			log.Print("cannot read webcam")
 			continue
 		}
-		jpReader := bytes.NewReader(jp)
-		faces, err := fbox.Check(jpReader)
-		if err != nil {
-			log.Println("[ERROR] calling facebox", err)
+		if img.Empty() {
 			continue
-		}
-		for _, face := range faces {
-			if face.Matched {
-				fmt.Println("I know you ", face.Name)
-			} else {
-				fmt.Println("I DO NOT know you ")
-			}
 		}
 
-		// just MJPEG
-		w.Write([]byte("Content-Type: image/jpeg\r\n"))
-		w.Write([]byte("Content-Length: " + string(len(jp)) + "\r\n\r\n"))
-		w.Write(jp)
-		w.Write([]byte("\r\n"))
-		w.Write([]byte("--informs\r\n"))
+		// detect faces
+		rects := classifier.DetectMultiScale(img)
+
+		for _, r := range rects {
+			// Save each found face into the file
+			imgFace := img.Region(r)
+			imgName := fmt.Sprintf("%d.jpg", time.Now().UnixNano())
+			gocv.IMWrite(imgName, imgFace)
+			imgFace.Close()
+
+			f, err := os.Open(imgName)
+			if err != nil {
+				log.Printf("unable to open saved img: %v", err)
+			}
+
+			faces, err := fbox.Check(f)
+			if err != nil {
+				log.Printf("unable to recognize face: %v", err)
+			}
+
+			f.Close()
+			// gocv requires us to save file, so we need to remove it here
+			os.Remove(imgName)
+
+			var caption = "I DO NOT know you"
+			if len(faces) > 0 {
+				caption = fmt.Sprintf("I know you %s", faces[0].Name)
+			}
+
+			// print caption and draw rectangle for the face
+			size := gocv.GetTextSize(caption, gocv.FontHersheyPlain, 3, 2)
+			pt := image.Pt(r.Min.X+(r.Min.X/2)-(size.X/2), r.Min.Y-2)
+			gocv.PutText(img, caption, pt, gocv.FontHersheyPlain, 3, blue, 2)
+			gocv.Rectangle(img, r, blue, 3)
+		}
+
+		// show the image in the window, and wait 500ms
+		window.IMShow(img)
+		window.WaitKey(500)
 	}
-	cmd.Wait()
 }
