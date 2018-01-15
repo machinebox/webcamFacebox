@@ -12,8 +12,6 @@ import (
 	"gocv.io/x/gocv"
 )
 
-const boundary = "informs"
-
 var (
 	fbox          *facebox.Client
 	faceAlgorithm = "haarcascade_frontalface_default.xml"
